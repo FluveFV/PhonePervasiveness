@@ -8,7 +8,7 @@ date: "2024-01-01"
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+```{r warning=FALSE}
 library(ggplot2)
 library(dplyr)
 library(tidyverse)
@@ -33,24 +33,51 @@ Part of the code was taken from user Zach on <https://www.statology.org/bagging-
 library(rpart)
 library(rpart.plot)
 library(randomForest)
-tree <- rpart(what ~ withw + touches + delta_td + hh_not + w1_A01 + MExtraversion + MAgreeableness + MConscientiousness + MNeuroticism, data=df_touch_td_demo, control=rpart.control(cp=.005))
+set.seed(25)
+
+n <- nrow(df_touch_td_demo)
+train_indices <- sample(1:n, 0.8 * n)
+train_data <- df_touch_td_demo[train_indices, ]
+test_data <- df_touch_td_demo[-train_indices, ]
+
+tree <- rpart(touches ~ what + withw + w1_A01 + department + cohort, data=train_data,
+              control=rpart.control(cp=.0009))
 printcp(tree)
 best <- tree$cptable[which.min(tree$cptable[,"xerror"]),"CP"]
 pruned_tree <- prune(tree, cp=best)
+printcp(pruned_tree)
+predictions <- predict(pruned_tree, newdata = test_data)
+
+mse <- mean((test_data$touches - predictions)^2)
+cat("Mean Squared Error on Testing Data:", mse, "\n")
+
+resfactor = 40
+png(filename='decision_tree.png', res = 72*resfactor, height=800*resfactor, width=500*resfactor)
 prp(pruned_tree, type = 4, fallen.leaves=TRUE, leaf.round = 1,
     faclen=15, #use full names for factor labels
-    extra=3, #display number of obs. for each terminal node
+    extra=0, #display number of obs. for each terminal node
     roundint=F, #don't round to integers in output
-    digits=1) #display 5 decimal pl
+    digits=1) #display 5 decimal pl)
+
+dev.off()
 ```
+
 
 ```{r}
 set.seed(25)
-model <- randomForest(
-  formula = what ~  withw + touches + delta_td + hh_not + w1_A01 + department + cohort + expectday + uniproblem  + mood + MExtraversion + MAgreeableness + MConscientiousness + MNeuroticism,
-  data = df_touch_td_demo
+model <- randomForest(touches ~ what + withw + w1_A01 + department + cohort, data=train_data,
 )
+
+
+resfactor = 40
+png(filename='decision_tree.png', res = 72*resfactor, height=800*resfactor, width=500*resfactor)
 varImpPlot(model) 
+dev.off()
+
+predictions <- predict(model, newdata = test_data)
+
+mse <- mean((test_data$touches - predictions)^2)
+cat("Mean Squared Error on Testing Data:", mse, "\n")
 ```
 
 ### ANOVA and Kruskal-Wallis test
@@ -113,7 +140,7 @@ perform_dunn_test <- function(variable_name) {
   output <- dunn_test(formula = as.formula(paste("touches ~", variable_name)),
                          data = subset_df)
   sub_output <- output %>%
-    arrange(statistic) %>%
+    arrange(desc(abs(statistic))) %>%  #this selects the strongest statistic
     head(1)
   return(sub_output)
 }
