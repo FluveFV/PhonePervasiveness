@@ -10,14 +10,20 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r warning=FALSE}
 library(ggplot2)
-library(dplyr)
-library(tidyverse)
+library(dplyr, quietly=TRUE)
+library(tidyverse , quietly=TRUE)
 library(broom)
 library(AICcmodavg)
 library(ggpubr)
 library(TSA)
 library(tseries)
 library(kableExtra)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(Metrics)
+library(FSA)
+set.seed(25)
 ```
 
 ```{r}
@@ -27,20 +33,21 @@ df_touch_td_demo  <- read_file
 
 ### Random forest
 
-Part of the code was taken from user Zach on <https://www.statology.org/bagging-machine-learning/>.
+Part of the code was taken from user Zach on https://www.statology.org/random-forests/ . 
 
 ```{r}
-library(rpart)
-library(rpart.plot)
-library(randomForest)
-set.seed(25)
-
-n <- nrow(df_touch_td_demo)
+# Preparing data
+colnames(df_touch_td_demo)[106] <- "sex" 
+df_touch_td_demo$touches <- as.numeric(df_touch_td_demo$touches)
+n <- nrow(df_touch_td_demo)-nrow(df_touch_td_demo)/2  # only half of the data because it is very computationally expensive.
 train_indices <- sample(1:n, 0.8 * n)
 train_data <- df_touch_td_demo[train_indices, ]
 test_data <- df_touch_td_demo[-train_indices, ]
+```
 
-tree <- rpart(touches ~ what + withw + w1_A01 + department + cohort, data=train_data,
+
+```{r}
+tree <- rpart(touches ~ what + withw + sex + department + cohort, data=train_data,
               control=rpart.control(cp=.0009))
 printcp(tree)
 best <- tree$cptable[which.min(tree$cptable[,"xerror"]),"CP"]
@@ -51,54 +58,97 @@ predictions <- predict(pruned_tree, newdata = test_data)
 mse <- mean((test_data$touches - predictions)^2)
 cat("Mean Squared Error on Testing Data:", mse, "\n")
 
-resfactor = 40
-png(filename='decision_tree.png', res = 72*resfactor, height=800*resfactor, width=500*resfactor)
+#resfactor = 20
+#png(filename='decision_tree.png', res = 72*resfactor, height=500*resfactor, width=800*resfactor)
 prp(pruned_tree, type = 4, fallen.leaves=TRUE, leaf.round = 1,
     faclen=15, #use full names for factor labels
     extra=0, #display number of obs. for each terminal node
     roundint=F, #don't round to integers in output
     digits=1) #display 5 decimal pl)
-
-dev.off()
+#dev.off()
 ```
 
 
-```{r}
-set.seed(25)
-model <- randomForest(touches ~ what + withw + w1_A01 + department + cohort, data=train_data,
+```{r eval=FALSE}
+
+#random forest
+model <- randomForest(touches ~ what + withw + sex + department + cohort, data=train_data,
 )
 
 
-resfactor = 40
-png(filename='decision_tree.png', res = 72*resfactor, height=800*resfactor, width=500*resfactor)
+resfactor = 10
+#png(filename='variable_importance_randomforest.png', res = 72*resfactor, height=500*resfactor, width=800*resfactor)
 varImpPlot(model) 
-dev.off()
-
+#dev.off()
+#predicting with the first model:
 predictions <- predict(model, newdata = test_data)
 
-mse <- mean((test_data$touches - predictions)^2)
+print(rmse(test_data$touches, predictions))
+
 cat("Mean Squared Error on Testing Data:", mse, "\n")
+
 ```
+
+```{r eval=FALSE}
+#Tuning the model
+
+model_tuning <- tuneRF(
+  x= train_data[,c("sex", 'cohort', 'withw', 'department', 'what')], 
+  y= train_data[,c('touches')],
+  type = "regression",
+  ntreeTry=50,
+  mtryStart=4,   # p/3 where p is the number of variables
+  stepFactor=0.9,  
+  improve=0.01,
+  trace=FALSE,
+  plot = FALSE,
+  doBest = FALSE
+)
+```
+```{r}
+# Selecting the best parameter  (3)
+best_mtry <- model_tuning[model_tuning[,2] == min(model_tuning[,2]), 1]
+
+# After tuning
+final_model <- randomForest(touches ~ what + withw + sex + department + cohort, 
+                            data=train_data, mtry=3, ntree=250
+)
+
+# Predicting with the final, tuned model :
+predValues <- predict(final_model ,newdata=test_data)
+
+varImpPlot(final_model)
+
+```
+
+
+
+
 
 ### ANOVA and Kruskal-Wallis test
 
 ```{r}
 #Only inserting variables I am interested in.
-anova.tddemo <- aov(scale(touches) ~ hh_not + MExtraversion + what + delta_td +  w1_A01 + cohort + withw +   weekday + department + mood + where + MNeuroticism + travel_fromto + travel_medium + sport + sleep  + howwasday + expectday + howwasday + uniproblem + w1_A01 + tm + MAgreeableness + MConscientiousness,
+anova.tddemo <- aov(touches ~ what + withw + sex + department + cohort,
                     data = df_touch_td_demo)
+
 summary(anova.tddemo) 
+png(filename='variable_importance_randomforest.png', res = 72*resfactor, height=500*resfactor, width=800*resfactor)
+plot(anova.tddemo)
+dev.off()
+
 ```
 
 By changing the order of these variables it seems like the F value keeps changing. This must mean that there are some violations to the assumption for an ANOVA model, as the variables may have dependent variances - if they did, their F-value wouldn't really change based on the other predictors order and presence. I have noted some variables increase their F value up to 200 when moved or when other predictors were inserted. I will use an alternative method to ANOVA.
 
-From <https://statsandr.com/blog/kruskal-wallis-test-nonparametric-version-anova/>: "First, the Kruskal-Wallis test compares several groups in terms of a quantitative variable. So there must be one quantitative dependent variable (which corresponds to the measurements to which the question relates) and one qualitative independent variable (with at least 2 levels which will determine the groups to compare).2
+From <https://statsandr.com/blog/kruskal-wallis-test-nonparametric-version-anova/>: "First, the Kruskal-Wallis test compares several groups in terms of a quantitative variable. So there must be one quantitative dependent variable (which corresponds to the measurements to which the question relates) and one qualitative independent variable (with at least 2 levels which will determine the groups to compare).
 
 Second, remember that the Kruskal-Wallis test is a nonparametric test, so the normality assumption is not required. However, the independence assumption still holds."
 
 ```{r}
 library(rstatix)
 subset_df <- df_touch_td_demo %>% 
-  filter(!(withw %in% c('Alone', 'No information', 'Not answer')))  %>%
+  filter(!(withw %in% c('Alone', 'No information', 'Not answer', 'Expired')))  %>%
   filter(!(what %in% c(' I will go to sleep', 'Sleeping', 'Expired'))) %>%
   filter(!(touches > 2000))
 
@@ -119,7 +169,7 @@ perform_kruskal_test <- function(variable_name) {
                          data = subset_df)
   return(output)
 }
-variable_names <- c('withw', 'hh_not', 'what',  "w1_A01", "cohort", "withw", "department", "mood", "where", 'weekday')
+variable_names <- c('withw', 'what',  "sex", "cohort", 'department')
 
 output_list <- lapply(variable_names, perform_kruskal_test)
 
@@ -133,7 +183,7 @@ table1 <- data.frame(
 # Displaying the results
 print(table1)
 
-library(FSA)
+
 
 # Dunn test
 perform_dunn_test <- function(variable_name) {
@@ -160,27 +210,6 @@ write.csv(table2, "Processed Data/table2.csv", row.names=FALSE)
 kruskal_test(subset_df, touches ~ weekday)
 ```
 
-### Linear regression (numerical variables only)
-
-```{r}
-excluded_columns <- c("datein_ques", "datein_answ", "DD_not", "hh_not", "mm_not", "A3c", 
-                      "tdtot", "motot","answerduration_td", "what1", "what2", "where2", "withw2",
-                      'A6b',  'travel_fromto', 'tm',  'sport', 'sleep')
-included_columns <- c('touches', 'timestamp', 'weekday', 'day', 'week', 'what', 'where',
-                       'withw', 'mood', 'delta_td', 'expectday', 'delta_mo', 'howwasday',
-                      'uniproblem', 'delta_ev', 'delta_sn', 'w1_A01', 'department', 'cohort')
-```
-
-```{r}
-l_mod = lm(touches ~ hh_not * weekday , data=df_touch_td_demo)
-print(summary(l_mod))  # There is an Adjusted R^2 of 0.05038 
-hh_not2 <- df_touch_td_demo$hh_not^2 
-q_mod = lm(touches ~ hh_not* weekday + hh_not2 , data=df_touch_td_demo )  
-print(summary(q_mod))  # There is an Adjusted R^2 of 0.05077 
-#Day never has significance when "weekday" is not in the model. 
-#The model's adjusted R^2 does not improve when adding quadratic terms.
-```
-
 ### Clustering with K-MODES
 
 Part of this code is from <https://search.r-project.org/CRAN/refmans/klaR/html/kmodes.html>.
@@ -194,17 +223,11 @@ library(clustMixType)
 subset_df <- df_touch_td_demo %>% 
   filter(!(withw %in% c('Alone', 'No information', 'Not answer')))  
 
-kmodes(data=subset_df[, c('withw', 'hh_not', 'what',  "w1_A01", "cohort", "withw", "department", "mood", "where", 'MExtraversion', 'MAgreeableness', 'MConscientiousness', 'MNeuroticism')], 
+kmodes(data=subset_df[, c('withw', 'hh_not', 'what',  "sex", "cohort", "withw", "department")], 
        modes = 40, 
        iter.max = 10, weighted = FALSE, fast = TRUE)
 
-
-
-
 subset_df <- subset_df[, c('w1_A01', 'cohort', 'department', 'where', 'what', 'withw')] 
-#"mood" and "nationality" were previously inserted but removed because they don't vary much, while 
-#"where", "what" and "weekday" or other time-sensitive variable do not indicate very stable clusters but 
-# rather some most typical occurrences
 
 k_modes_result <- kmodes(subset_df, modes=9, iter.max = 100)
 
@@ -217,13 +240,4 @@ k_modes_result <- kmodes(subset_df, modes=20, iter.max = 100)
 View(k_modes_result$modes)
 cluster_table = k_modes_result$modes
 write.csv(cluster_table, "Processed Data/cluster_table.csv", row.names=FALSE)
-```
-
-### Akaike Information Criterion
-
-```{r}
-library(AICcmodavg)
-model.set <- list(l_mod, q_mod)
-model.names <- c("linear model", 'quadratic model')
-aictab(model.set, modnames = model.names)
 ```
